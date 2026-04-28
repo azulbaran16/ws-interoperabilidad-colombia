@@ -1,24 +1,26 @@
-﻿# Interop Gateway Colombia
+# Interop Gateway Colombia
 
-WS independiente para intermediar interoperabilidad Minsalud desde infraestructura en Colombia.
+Standalone gateway service that brokers traffic between cloud-hosted clients and the Colombian Ministry of Health (Minsalud) interoperability platform (RDA / Vulcano), running on infrastructure inside Colombia.
 
-## Objetivo
+## What it solves
 
-- Recibir alto volumen de solicitudes desde servidores cloud.
-- Reenviar a APIM/FHIR Minsalud desde un servidor colombiano.
-- Mantener compatibilidad con rutas actuales (`/Composition/...`, `/Patient/...`, etc.).
+The Colombian RDA endpoint expects traffic originating from Colombian infrastructure and works best with predictable connection pooling and rate limiting. This gateway sits between any number of cloud-hosted clients and Minsalud:
 
-## Arquitectura
+- Accepts a high volume of inbound requests from cloud servers.
+- Forwards them to the Minsalud APIM/FHIR endpoints from a Colombian server.
+- Preserves the existing route contracts (`/Composition/...`, `/Patient/...`, etc.) so client code does not change.
 
-- `ASP.NET Core 8` con `HttpClientFactory` y pooling de conexiones.
-- Rate limiter global (`token bucket`) para proteger el servicio.
-- Reintentos automaticos para errores transitorios (`408`, `429`, `5xx`).
-- Seguridad por API key configurable.
-- Token OAuth gestionado opcionalmente en el gateway.
+## Stack
 
-## Rutas soportadas
+- **ASP.NET Core 8** with `HttpClientFactory` and connection pooling.
+- Global token-bucket **rate limiter** to protect the upstream service.
+- **Automatic retries** for transient errors (`408`, `429`, `5xx`).
+- Configurable **API key authentication** at the gateway boundary.
+- Optional **OAuth 2.0 token management** centralized at the gateway.
 
-Se permite proxy para estos recursos raiz:
+## Supported routes
+
+The gateway proxies these FHIR root resources:
 
 - `Composition`
 - `Patient`
@@ -27,45 +29,40 @@ Se permite proxy para estos recursos raiz:
 - `CodeSystem`
 - `DocumentReference`
 
-## Configuracion
+## Configuration
 
-Archivo: `src/InteropGateway.Api/appsettings.json`
+File: `src/InteropGateway.Api/appsettings.json`
 
-- `Gateway.UpstreamBaseUrl`: URL base global (solo si no usas `Gateway.Clients`).
-- `Gateway.ForwardClientAuthorization`: reenvia header `Authorization` del cliente.
-- `Gateway.ForwardClientSubscriptionKey`: reenvia `Ocp-Apim-Subscription-Key`.
-- `Gateway.UpstreamSubscriptionKey`: si se define, sobreescribe la subscription key.
-- `Gateway.ManagedToken`: habilita token OAuth centralizado (opcional).
-- `Gateway.Clients`: configuracion multi-cliente con URL y credenciales por cliente.
-- `Security.RequireApiKey`: activa autenticacion de entrada por API key.
-- `Security.ApiKeyHeaderName`: header que valida el gateway.
-- `Security.ApiKeys`: llaves validas.
+| Key | Description |
+|---|---|
+| `Gateway.UpstreamBaseUrl` | Single upstream URL (only when `Gateway.Clients` is not used). |
+| `Gateway.ForwardClientAuthorization` | Forward the inbound `Authorization` header. |
+| `Gateway.ForwardClientSubscriptionKey` | Forward `Ocp-Apim-Subscription-Key`. |
+| `Gateway.UpstreamSubscriptionKey` | Override the subscription key when defined. |
+| `Gateway.ManagedToken` | Enable a centrally managed OAuth token. |
+| `Gateway.Clients` | Multi-tenant configuration (per-client URL and credentials). |
+| `Security.RequireApiKey` | Toggle inbound API-key authentication. |
+| `Security.ApiKeyHeaderName` | Header used to validate inbound API keys. |
+| `Security.ApiKeys` | Valid inbound API keys. |
 
-Por defecto se valida `Ocp-Apim-Subscription-Key` para que puedas migrar sin tocar codigo cliente.
+By default the gateway accepts `Ocp-Apim-Subscription-Key` so existing clients can migrate without code changes.
 
-### Modo multi-cliente (recomendado para tu caso)
+### Multi-tenant mode
 
-Cada cliente define:
+Each client defines:
 
 - `ClientId`
-- `InboundApiKey` (llave que llega al gateway)
-- `UpstreamBaseUrl` (URL especifica de Minsalud para ese cliente)
-- `UpstreamSubscriptionKey` (opcional, para no depender de la del request)
-- `ManagedToken` (opcional, OAuth por cliente)
+- `InboundApiKey`
+- `UpstreamBaseUrl`
+- `UpstreamSubscriptionKey` (optional)
+- `ManagedToken` (optional, OAuth per client)
 
-El gateway toma la API key entrante y enruta automaticamente al `UpstreamBaseUrl` del cliente correcto.
+The gateway uses the inbound API key to route the request to the matching `UpstreamBaseUrl`.
 
-## Ejecucion local
-
-```powershell
-cd C:\Repositorios\ws-interoperabilidad-colombia
-dotnet run --project .\src\InteropGateway.Api\InteropGateway.Api.csproj
-```
-
-Para validar comportamiento con `appsettings.json` (sin perfil de desarrollo):
+## Running locally
 
 ```powershell
-dotnet run --no-launch-profile --project .\src\InteropGateway.Api\InteropGateway.Api.csproj
+dotnet run --project ./src/InteropGateway.Api/InteropGateway.Api.csproj
 ```
 
 Health checks:
@@ -73,31 +70,24 @@ Health checks:
 - `GET /health/live`
 - `GET /health/ready`
 
-## Integracion con SaludSystem10 (sin romper contratos actuales)
+## Drop-in integration with an existing system
 
-En `interop_minsalud_config`, cambia `apim_url` para que apunte a este gateway en Colombia.
-
-Ejemplo:
+Point the existing `apim_url` configuration at the gateway. Existing methods (`SendRdaPatient`, `SendRdaHospitalization`, etc.) keep working without modification.
 
 ```sql
 UPDATE interop_minsalud_config
-SET apim_url = 'https://TU-GATEWAY-COLOMBIA'
-WHERE activo = 1;
+SET apim_url = 'https://your-gateway-colombia'
+WHERE active = 1;
 ```
 
-Con esto, los metodos existentes (`EnviarRdaPaciente`, `EnviarRdaHospitalizacion`, etc.) siguen funcionando,
-pero ya no salen directo desde servidores cloud a Minsalud.
+## Deployment recommendations
 
-Notas importantes:
+- Run behind Nginx / Traefik / Application Gateway.
+- Enforce HTTPS.
+- Restrict access by source IP for cloud servers.
+- Rotate API keys and OAuth secrets on a schedule.
+- Scale horizontally as traffic grows.
 
-- Si cada cliente tiene URL distinta de ministerio, el gateway lo soporta por `Gateway.Clients`.
-- Si cada cliente tiene `subscription key` distinta, configurala en `UpstreamSubscriptionKey`.
-- Si cada cliente usa OAuth distinto, habilita `ManagedToken` dentro de cada cliente.
+## Status
 
-## Recomendaciones de despliegue
-
-- Desplegar detras de Nginx/Traefik o Application Gateway.
-- Habilitar HTTPS obligatorio.
-- Restringir acceso por IP de servidores cloud.
-- Rotar API keys y secretos OAuth periodicamente.
-- Escalar horizontalmente si el volumen aumenta.
+Used as a working reference while integrating a hospital information system with RDA Minsalud in production.
