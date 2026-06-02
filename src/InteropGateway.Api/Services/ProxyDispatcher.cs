@@ -37,8 +37,6 @@ public sealed class ProxyDispatcher(
 
     public async Task ProxyAsync(HttpContext context, CancellationToken cancellationToken)
     {
-        var path = context.Request.Path.Value ?? string.Empty;
-        var normalizedPath = path.Trim('/');
         var target = ResolveTarget(context);
         if (target is null)
         {
@@ -49,6 +47,11 @@ public sealed class ProxyDispatcher(
             }, cancellationToken);
             return;
         }
+
+        // Normaliza prefijos opcionales (p.ej. "/ihce") para que el cliente pueda
+        // llamar "/CodeSystem/..." o "/ihce/CodeSystem/..." indistintamente.
+        var path = StripInboundPrefix(context.Request.Path.Value ?? string.Empty, target.InboundStripPrefixes);
+        var normalizedPath = path.Trim('/');
 
         if (string.IsNullOrWhiteSpace(normalizedPath))
         {
@@ -191,6 +194,35 @@ public sealed class ProxyDispatcher(
         var root = normalizedPath.Split('/', 2, StringSplitOptions.RemoveEmptyEntries)[0];
         return allowedRootResources.Any(x =>
             string.Equals(x, root, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Si la ruta entrante empieza por uno de los prefijos configurados (p.ej. "ihce"),
+    /// lo retira para que "/ihce/CodeSystem/X" y "/CodeSystem/X" sean equivalentes.
+    /// Conserva la barra inicial. No altera la ruta si no hay prefijo coincidente.
+    /// </summary>
+    private static string StripInboundPrefix(string path, string[] stripPrefixes)
+    {
+        if (stripPrefixes is null || stripPrefixes.Length == 0)
+            return path;
+
+        var trimmed = path.TrimStart('/');
+        if (trimmed.Length == 0)
+            return path;
+
+        var segments = trimmed.Split('/', 2, StringSplitOptions.None);
+        var first = segments[0];
+        if (string.IsNullOrEmpty(first))
+            return path;
+
+        var matches = stripPrefixes.Any(p =>
+            !string.IsNullOrWhiteSpace(p) &&
+            string.Equals(p.Trim('/'), first, StringComparison.OrdinalIgnoreCase));
+        if (!matches)
+            return path;
+
+        var rest = segments.Length > 1 ? segments[1] : string.Empty;
+        return "/" + rest;
     }
 
     private static string BuildUpstreamUrl(string upstreamBaseUrl, string path, string? queryString)
@@ -385,6 +417,7 @@ public sealed class ProxyDispatcher(
                 ForwardClientAuthorization: _gatewayOptions.ForwardClientAuthorization,
                 ForwardClientSubscriptionKey: _gatewayOptions.ForwardClientSubscriptionKey,
                 AllowedRootResources: _gatewayOptions.AllowedRootResources,
+                InboundStripPrefixes: _gatewayOptions.InboundStripPrefixes,
                 ManagedToken: _gatewayOptions.ManagedToken,
                 RequestTimeoutSeconds: _gatewayOptions.RequestTimeoutSeconds);
         }
@@ -402,6 +435,10 @@ public sealed class ProxyDispatcher(
             ? client.AllowedRootResources
             : _gatewayOptions.AllowedRootResources;
 
+        var stripPrefixes = client.InboundStripPrefixes.Length > 0
+            ? client.InboundStripPrefixes
+            : _gatewayOptions.InboundStripPrefixes;
+
         return new GatewayTarget(
             ClientId: client.ClientId,
             UpstreamBaseUrl: client.UpstreamBaseUrl,
@@ -409,6 +446,7 @@ public sealed class ProxyDispatcher(
             ForwardClientAuthorization: client.ForwardClientAuthorization,
             ForwardClientSubscriptionKey: client.ForwardClientSubscriptionKey,
             AllowedRootResources: allowed,
+            InboundStripPrefixes: stripPrefixes,
             ManagedToken: client.ManagedToken,
             RequestTimeoutSeconds: _gatewayOptions.RequestTimeoutSeconds);
     }
@@ -424,6 +462,7 @@ public sealed class ProxyDispatcher(
                 ForwardClientAuthorization: _gatewayOptions.ForwardClientAuthorization,
                 ForwardClientSubscriptionKey: _gatewayOptions.ForwardClientSubscriptionKey,
                 AllowedRootResources: _gatewayOptions.AllowedRootResources,
+                InboundStripPrefixes: _gatewayOptions.InboundStripPrefixes,
                 ManagedToken: _gatewayOptions.ManagedToken,
                 RequestTimeoutSeconds: _gatewayOptions.RequestTimeoutSeconds);
             yield break;
@@ -435,6 +474,10 @@ public sealed class ProxyDispatcher(
                 ? client.AllowedRootResources
                 : _gatewayOptions.AllowedRootResources;
 
+            var stripPrefixes = client.InboundStripPrefixes.Length > 0
+                ? client.InboundStripPrefixes
+                : _gatewayOptions.InboundStripPrefixes;
+
             yield return new GatewayTarget(
                 ClientId: client.ClientId,
                 UpstreamBaseUrl: client.UpstreamBaseUrl,
@@ -442,6 +485,7 @@ public sealed class ProxyDispatcher(
                 ForwardClientAuthorization: client.ForwardClientAuthorization,
                 ForwardClientSubscriptionKey: client.ForwardClientSubscriptionKey,
                 AllowedRootResources: allowed,
+                InboundStripPrefixes: stripPrefixes,
                 ManagedToken: client.ManagedToken,
                 RequestTimeoutSeconds: _gatewayOptions.RequestTimeoutSeconds);
         }
@@ -454,6 +498,7 @@ public sealed class ProxyDispatcher(
         bool ForwardClientAuthorization,
         bool ForwardClientSubscriptionKey,
         string[] AllowedRootResources,
+        string[] InboundStripPrefixes,
         ManagedTokenOptions ManagedToken,
         int RequestTimeoutSeconds);
 }

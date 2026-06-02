@@ -33,6 +33,15 @@ public sealed class GatewayOptions
         "DocumentReference"
     ];
 
+    /// <summary>
+    /// Prefijos de ruta opcionales que el gateway acepta y RETIRA de la solicitud
+    /// entrante antes de validar el whitelist y de reenviar al upstream. Permite que
+    /// un cliente llame indistintamente "/CodeSystem/CUPS" o "/ihce/CodeSystem/CUPS"
+    /// y que ambas se comporten igual (el "/ihce" del lado Minsalud lo aporta el
+    /// UpstreamBaseUrl, por eso aquí se quita para no duplicarlo).
+    /// </summary>
+    public string[] InboundStripPrefixes { get; set; } = ["ihce"];
+
     public RetryOptions Retry { get; set; } = new();
 
     public RateLimiterOptions RateLimiter { get; set; } = new();
@@ -145,6 +154,11 @@ public sealed class GatewayClientOptions
     public string? UpstreamSubscriptionKey { get; set; }
 
     public string[] AllowedRootResources { get; set; } = [];
+
+    /// <summary>
+    /// Override por cliente. Si está vacío, se usa Gateway.InboundStripPrefixes global.
+    /// </summary>
+    public string[] InboundStripPrefixes { get; set; } = [];
 
     public ManagedTokenOptions ManagedToken { get; set; } = new();
 }
