@@ -28,6 +28,27 @@ public sealed class ProxyDispatcher(
         "Host"
     };
 
+    private static readonly HashSet<string> BlockedForwardHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Minsalud/APIM rejects tracing and auxiliary proxy headers that aren't part of the allowed contract.
+        "traceparent",
+        "tracestate",
+        "baggage",
+        "Request-Id",
+        "Correlation-Context",
+        "X-Correlation-Id",
+        "X-Forwarded-For",
+        "X-Forwarded-Proto",
+        "Forwarded"
+    };
+
+    private static readonly HashSet<string> AllowedForwardHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization",
+        "Ocp-Apim-Subscription-Key",
+        "Accept"
+    };
+
     private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
     private readonly GatewayOptions _gatewayOptions = gatewayOptions.Value;
     private readonly SecurityOptions _securityOptions = securityOptions.Value;
@@ -152,7 +173,7 @@ public sealed class ProxyDispatcher(
 
         using (upstreamResponse)
         {
-            await CopyToDownstreamAsync(context, upstreamResponse, correlationId, cancellationToken);
+            await CopyToDownstreamAsync(context, upstreamResponse, correlationId, upstreamUri, cancellationToken);
         }
     }
 
@@ -260,7 +281,13 @@ public sealed class ProxyDispatcher(
 
         foreach (var header in incomingHeaders)
         {
+            if (!AllowedForwardHeaders.Contains(header.Key))
+                continue;
+
             if (HopByHopHeaders.Contains(header.Key))
+                continue;
+
+            if (BlockedForwardHeaders.Contains(header.Key))
                 continue;
 
             var isSecurityHeader = string.Equals(
@@ -286,14 +313,10 @@ public sealed class ProxyDispatcher(
             }
         }
 
-        request.Headers.Remove("X-Forwarded-For");
-        request.Headers.TryAddWithoutValidation("X-Forwarded-For", remoteIp);
-
-        request.Headers.Remove("X-Forwarded-Proto");
-        request.Headers.TryAddWithoutValidation("X-Forwarded-Proto", scheme);
-
-        request.Headers.Remove("X-Correlation-Id");
-        request.Headers.TryAddWithoutValidation("X-Correlation-Id", correlationId);
+        if (!request.Headers.Accept.Any())
+        {
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+        }
 
         return request;
     }
@@ -380,6 +403,7 @@ public sealed class ProxyDispatcher(
         HttpContext context,
         HttpResponseMessage upstreamResponse,
         string correlationId,
+        Uri upstreamUri,
         CancellationToken cancellationToken)
     {
         context.Response.StatusCode = (int)upstreamResponse.StatusCode;
@@ -392,6 +416,43 @@ public sealed class ProxyDispatcher(
             context.Response.Headers[header.Key] = header.Value.ToArray();
         }
 
+        context.Response.Headers["X-Correlation-Id"] = correlationId;
+        context.Response.Headers.Remove("transfer-encoding");
+
+        if (!upstreamResponse.IsSuccessStatusCode)
+        {
+            var errorBody = await upstreamResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+            if (errorBody.Length == 0)
+            {
+                context.Response.Headers.Remove("content-length");
+                context.Response.Headers.Remove("Content-Length");
+                context.Response.Headers.Remove("content-type");
+                context.Response.Headers.Remove("Content-Type");
+                context.Response.ContentType = "application/json; charset=utf-8";
+
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    error = "El upstream respondió con error sin contenido.",
+                    statusCode = (int)upstreamResponse.StatusCode,
+                    reason = upstreamResponse.ReasonPhrase,
+                    upstream = upstreamUri.ToString(),
+                    correlationId
+                }, cancellationToken);
+                return;
+            }
+
+            foreach (var header in upstreamResponse.Content.Headers)
+            {
+                if (HopByHopHeaders.Contains(header.Key))
+                    continue;
+
+                context.Response.Headers[header.Key] = header.Value.ToArray();
+            }
+
+            await context.Response.Body.WriteAsync(errorBody, cancellationToken);
+            return;
+        }
+
         foreach (var header in upstreamResponse.Content.Headers)
         {
             if (HopByHopHeaders.Contains(header.Key))
@@ -399,9 +460,6 @@ public sealed class ProxyDispatcher(
 
             context.Response.Headers[header.Key] = header.Value.ToArray();
         }
-
-        context.Response.Headers["X-Correlation-Id"] = correlationId;
-        context.Response.Headers.Remove("transfer-encoding");
 
         await upstreamResponse.Content.CopyToAsync(context.Response.Body, cancellationToken);
     }

@@ -27,6 +27,7 @@ The gateway proxies these FHIR root resources:
 - `Practitioner`
 - `Organization`
 - `CodeSystem`
+- `ValueSet`
 - `DocumentReference`
 
 ## Configuration
@@ -47,7 +48,24 @@ File: `src/InteropGateway.Api/appsettings.json`
 
 By default the gateway accepts `Ocp-Apim-Subscription-Key` so existing clients can migrate without code changes.
 
-### Multi-tenant mode
+### Simple bridge mode (repository default)
+
+Use this mode when `SaludSystem10` already resolves the token and the subscription key in `interop_minsalud_config`.
+
+- `Gateway.Clients = []`
+- `Gateway.ManagedToken.Enabled = false`
+- `Security.RequireApiKey = false`
+- `Gateway.ForwardClientAuthorization = true`
+- `Gateway.ForwardClientSubscriptionKey = true`
+
+In this mode the gateway only forwards:
+
+- `Authorization: Bearer <client token>`
+- `Ocp-Apim-Subscription-Key: <Minsalud subscription key>`
+
+You only need to repoint the WCF `apim_url` to the gateway domain in Colombia.
+
+### Multi-tenant mode (optional)
 
 Each client defines:
 

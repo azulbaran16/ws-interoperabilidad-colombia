@@ -9,3 +9,4 @@ obj/
 *.log
 TestResults/
 artifacts/
+publish-iis/

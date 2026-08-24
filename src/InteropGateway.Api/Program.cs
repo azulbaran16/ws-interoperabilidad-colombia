@@ -2,6 +2,7 @@ using System.Net;
 using System.Threading.RateLimiting;
 using InteropGateway.Api.Configuration;
 using InteropGateway.Api.Services;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -34,7 +35,10 @@ builder.Services.AddHttpClient(ProxyDispatcher.HttpClientName)
         PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
         MaxConnectionsPerServer = Math.Max(16, gatewayOptions.MaxConnectionsPerServer),
         EnableMultipleHttp2Connections = true,
-        UseCookies = false
+        UseCookies = false,
+        // Prevent automatic distributed tracing headers like traceparent/tracestate
+        // from being added to outbound requests to Minsalud/APIM.
+        ActivityHeadersPropagator = null
     });
 
 builder.Services.AddRateLimiter(options =>
@@ -53,6 +57,27 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var feature = context.Features.Get<IExceptionHandlerPathFeature>();
+        var correlationId = context.Request.Headers.TryGetValue("X-Correlation-Id", out var cid) &&
+                            !string.IsNullOrWhiteSpace(cid.ToString())
+            ? cid.ToString()
+            : Guid.NewGuid().ToString("N");
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "Error interno en el gateway.",
+            detail = feature?.Error?.Message,
+            correlationId
+        });
+    });
+});
 
 app.UseRateLimiter();
 
@@ -127,7 +152,7 @@ app.MapGet("/", () => Results.Ok(new
 {
     service = "Interop Gateway Colombia",
     status = "running",
-    version = "1.0.0"
+    version = "1.0.2"
 }));
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));

@@ -75,6 +75,7 @@ Archivo:
       "Practitioner",
       "Organization",
       "CodeSystem",
+      "ValueSet",
       "DocumentReference"
     ],
     "Retry": {
